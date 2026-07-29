@@ -11,6 +11,7 @@ from sklearn.metrics import (
     f1_score, precision_score, recall_score, accuracy_score,
     confusion_matrix, classification_report
 )
+from sklearn.utils.class_weight import compute_sample_weight
 from sklearn.linear_model import LogisticRegression
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
@@ -40,25 +41,37 @@ def obtenir_modeles():
     }
 
 
-def comparer_modeles(X_train, X_test, y_train, y_test):
+def comparer_modeles(X_train, X_test, y_train, y_test, classe_positive=1):
     modeles = obtenir_modeles()
     resultats = []
     modeles_entraines = {}
 
+    sample_weight = compute_sample_weight(class_weight='balanced', y=y_train)
+
     for nom, modele in modeles.items():
-        modele.fit(X_train, y_train)
+        if nom == "Gradient Boosting":
+            modele.fit(X_train, y_train, sample_weight=sample_weight)
+        else:
+            modele.fit(X_train, y_train)
+
         y_pred = modele.predict(X_test)
 
         resultats.append({
             "modele": nom,
             "accuracy": round(accuracy_score(y_test, y_pred), 3),
-            "precision": round(precision_score(y_test, y_pred, average='weighted', zero_division=0), 3),
-            "recall": round(recall_score(y_test, y_pred, average='weighted', zero_division=0), 3),
-            "f1_score": round(f1_score(y_test, y_pred, average='weighted'), 3),
+            "precision_globale": round(precision_score(y_test, y_pred, average='weighted', zero_division=0), 3),
+            "recall_global": round(recall_score(y_test, y_pred, average='weighted', zero_division=0), 3),
+            "f1_global": round(f1_score(y_test, y_pred, average='weighted'), 3),
+            f"recall_classe_{classe_positive}": round(
+                recall_score(y_test, y_pred, pos_label=classe_positive, average='binary', zero_division=0)
+                if len(set(y_test)) == 2 else
+                recall_score(y_test, y_pred, average='macro', zero_division=0), 3
+            ),
         })
         modeles_entraines[nom] = modele
 
-    tableau = pd.DataFrame(resultats).sort_values("f1_score", ascending=False).reset_index(drop=True)
+    colonne_tri = f"recall_classe_{classe_positive}"
+    tableau = pd.DataFrame(resultats).sort_values(colonne_tri, ascending=False).reset_index(drop=True)
     return tableau, modeles_entraines
 
 
