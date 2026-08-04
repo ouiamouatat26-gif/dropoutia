@@ -65,13 +65,18 @@ async def predict(fichier: UploadFile = File(...)):
     X_risque = df_pret[COLONNES_MODELE_RISQUE]
 
     proba_decrochage = MODELE_DECROCHAGE.predict_proba(X_decrochage)[:, 1]
-    niveau_risque = MODELE_RISQUE.predict(X_risque)
+    niveau_risque_brut = MODELE_RISQUE.predict(X_risque)
+
+    niveau_risque_final = [
+        max(int(niveau), 2) if proba > 0.5 else int(niveau)
+        for niveau, proba in zip(niveau_risque_brut, proba_decrochage)
+    ]
 
     resultats = []
     for i in range(len(df_pret)):
         resultats.append({
             "codeEleve": str(df_brut.iloc[i].get("codeEleve", f"eleve_{i}")),
-            "niveau_risque_predit": int(niveau_risque[i]),
+            "niveau_risque_predit": niveau_risque_final[i],
             "probabilite_decrochage_pct": round(float(proba_decrochage[i]) * 100, 1),
         })
 
