@@ -1,6 +1,5 @@
 ﻿"""
-API DropoutIA -- expose les 2 modeles (niveau de risque + decrochage)
-via un endpoint /predict qui accepte un fichier Excel entier.
+API DropoutIA -- version simplifiee (Option B).
 """
 
 import sys
@@ -16,16 +15,10 @@ sys.path.append(os.path.abspath("../src"))
 import nettoyage
 
 MODELE_DECROCHAGE = joblib.load("../models/modele_decrochage.pkl")
-MODELE_RISQUE = joblib.load("../models/modele_risque.pkl")
 
 COLONNES_MODELE_DECROCHAGE = [
     "id_Genre", "nefstat", "NbrAbsence", "NbrRedoublement",
     "MoyenneNotes", "cd_com", "NbrAbsence_manquant", "age"
-]
-COLONNES_MODELE_RISQUE = [
-    "id_Genre", "Nefstat", "NbrAbsence", "NbrRedoublement",
-    "MoyenneNotes", "CD_REG", "CD_PROV", "CD_MIL",
-    "NbrAbsence_manquant", "age"
 ]
 
 app = FastAPI(title="DropoutIA API")
@@ -36,9 +29,28 @@ def preparer_fichier(df_brut: pd.DataFrame) -> pd.DataFrame:
     df = nettoyage.gerer_absences_manquantes(df, colonne="NbrAbsence")
     df = nettoyage.calculer_age(df, colonne_date="dateNaisEleve")
     df = nettoyage.encoder_categorielles(df, ["nefstat"])
-    if "nefstat" in df.columns and "Nefstat" not in df.columns:
-        df["Nefstat"] = df["nefstat"]
     return df
+
+
+def deriver_niveau_risque(probabilite_pct: float) -> int:
+    if probabilite_pct < 20:
+        return 1
+    elif probabilite_pct < 50:
+        return 2
+    elif probabilite_pct < 75:
+        return 3
+    else:
+        return 4
+
+
+LIBELLES_NIVEAU = {1: "Tres faible", 2: "Faible", 3: "Modere", 4: "Severe"}
+
+RECOMMANDATIONS = {
+    1: "Aucune action requise. Suivi de routine.",
+    2: "Suivi recommande lors du prochain conseil de classe.",
+    3: "Entretien conseille avec l'eleve dans les prochaines semaines.",
+    4: "Intervention prioritaire : entretien avec l'eleve et sa famille recommande dans les meilleurs delais.",
+}
 
 
 @app.post("/predict")
@@ -54,30 +66,26 @@ async def predict(fichier: UploadFile = File(...)):
 
     df_pret = preparer_fichier(df_brut)
 
-    colonnes_manquantes = set(COLONNES_MODELE_DECROCHAGE + COLONNES_MODELE_RISQUE) - set(df_pret.columns)
+    colonnes_manquantes = set(COLONNES_MODELE_DECROCHAGE) - set(df_pret.columns)
     if colonnes_manquantes:
         raise HTTPException(
             status_code=400,
             detail=f"Colonnes manquantes dans le fichier envoye : {colonnes_manquantes}"
         )
 
-    X_decrochage = df_pret[COLONNES_MODELE_DECROCHAGE]
-    X_risque = df_pret[COLONNES_MODELE_RISQUE]
-
-    proba_decrochage = MODELE_DECROCHAGE.predict_proba(X_decrochage)[:, 1]
-    niveau_risque_brut = MODELE_RISQUE.predict(X_risque)
-
-    niveau_risque_final = [
-        max(int(niveau), 2) if proba > 0.5 else int(niveau)
-        for niveau, proba in zip(niveau_risque_brut, proba_decrochage)
-    ]
+    X = df_pret[COLONNES_MODELE_DECROCHAGE]
+    proba_decrochage = MODELE_DECROCHAGE.predict_proba(X)[:, 1]
 
     resultats = []
     for i in range(len(df_pret)):
+        proba_pct = round(float(proba_decrochage[i]) * 100, 1)
+        niveau = deriver_niveau_risque(proba_pct)
         resultats.append({
             "codeEleve": str(df_brut.iloc[i].get("codeEleve", f"eleve_{i}")),
-            "niveau_risque_predit": niveau_risque_final[i],
-            "probabilite_decrochage_pct": round(float(proba_decrochage[i]) * 100, 1),
+            "niveau_risque_predit": niveau,
+            "niveau_risque_libelle": LIBELLES_NIVEAU[niveau],
+            "probabilite_decrochage_pct": proba_pct,
+            "recommandation": RECOMMANDATIONS[niveau],
         })
 
     return JSONResponse(content={"nombre_eleves": len(resultats), "resultats": resultats})
@@ -85,4 +93,4 @@ async def predict(fichier: UploadFile = File(...)):
 
 @app.get("/")
 def accueil():
-    return {"message": "API DropoutIA active. Voir /docs pour la documentation interactive."}
+    return {"message": "API DropoutIA active (architecture simplifiee). Voir /docs."}
