@@ -32,9 +32,15 @@ def gerer_absences_manquantes(df, colonne="NbrAbsence"):
     avec votre encadrant avant de choisir.
     """
     df = df.copy()
+    if colonne not in df.columns:
+        df[colonne] = pd.NA
+
+    df[colonne] = pd.to_numeric(df[colonne], errors="coerce")
     df[f"{colonne}_manquant"] = df[colonne].isnull().astype(int)
-    mediane = df[colonne].median()
-    df[colonne] = df[colonne].fillna(mediane)
+
+    mediane_reference = 0.0  # valeur figée, calculée une fois sur les données d'entrainement (jamais recalculee sur le fichier recu)
+
+    df[colonne] = df[colonne].fillna(mediane_reference)
     return df
 
 
@@ -54,8 +60,16 @@ def calculer_age(df, colonne_date="dateNaisEleve", date_reference="2024-09-01"):
     les transformer en une valeur numérique exploitable.
     """
     df = df.copy()
-    df[colonne_date] = pd.to_datetime(df[colonne_date])
-    df["age"] = (pd.Timestamp(date_reference) - df[colonne_date]).dt.days // 365
+    if colonne_date not in df.columns:
+        df["age"] = 0
+        return df
+
+    df[colonne_date] = pd.to_datetime(df[colonne_date], errors="coerce")
+    ages = (pd.Timestamp(date_reference) - df[colonne_date]).dt.days // 365
+    age_median = ages.median()
+    if pd.isna(age_median):
+        age_median = 0
+    df["age"] = ages.fillna(age_median).astype(int)
     return df
 
 

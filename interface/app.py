@@ -1,190 +1,195 @@
 """
-Interface Streamlit DropoutIA -- upload d'un fichier Excel, appel a
-l'API, affichage des resultats, visualisations, export CSV et PDF avec
-alertes visuelles.
+Interface Streamlit DropoutIA.
 """
 
-import streamlit as st
-import pandas as pd
-import requests
 import io
 
-from reportlab.lib.pagesizes import A4
+import pandas as pd
+import requests
+import streamlit as st
 from reportlab.lib import colors
-from reportlab.lib.units import cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import cm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-st.set_page_config(page_title="DropoutIA", page_icon="🎓", layout="wide")
+st.set_page_config(page_title="DropoutIA", page_icon="D", layout="wide")
 
 API_URL = "http://127.0.0.1:8000/predict"
 
+COLONNES_MINIMALES = [
+    "codeEleve", "dateNaisEleve", "id_Genre", "nefstat", "NbrAbsence",
+    "NbrRedoublement", "MoyenneNotes", "cd_com"
+]
+
 COULEURS_NIVEAU = {
-    1: colors.HexColor("#d4edda"),
-    2: colors.HexColor("#fff3cd"),
-    3: colors.HexColor("#ffe0b2"),
-    4: colors.HexColor("#f8d7da"),
+    1: "#d4edda",
+    2: "#fff3cd",
+    3: "#ffe0b2",
+    4: "#f8d7da",
 }
 
 
-def generer_pdf(df: pd.DataFrame) -> bytes:
+def couleur_niveau(niveau):
+    return f"background-color: {COULEURS_NIVEAU.get(int(niveau), '#ffffff')}"
+
+
+def generer_pdf(df: pd.DataFrame, meta: dict) -> bytes:
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=1.5 * cm, bottomMargin=1.5 * cm)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        topMargin=1.2 * cm,
+        bottomMargin=1.2 * cm,
+        leftMargin=1.2 * cm,
+        rightMargin=1.2 * cm,
+    )
     styles = getSampleStyleSheet()
     elements = []
 
-    elements.append(Paragraph("DropoutIA — Rapport de suivi du risque de décrochage", styles["Title"]))
-    elements.append(Spacer(1, 6))
+    elements.append(Paragraph("DropoutIA - Rapport de prediction", styles["Title"]))
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(f"Nombre d'eleves analyses : {len(df)}", styles["Normal"]))
+    elements.append(Paragraph(f"Traitement des absences : {meta.get('message_absences', '')}", styles["Normal"]))
     elements.append(Paragraph(
-        f"Nombre d'élèves analysés : {len(df)} — "
-        f"Élèves en situation sévère : {(df['niveau_risque_predit'] == 4).sum()}",
-        styles["Normal"]
+        "Les probabilites sont des predictions du modele, elles ne remplacent pas une decision pedagogique.",
+        styles["Normal"],
     ))
     elements.append(Spacer(1, 10))
 
-    # --- Legende des couleurs ---
-    elements.append(Paragraph("Légende des couleurs :", styles["Heading3"]))
-    donnees_legende = [["Couleur", "Niveau de risque", "Signification"]]
-    legende_texte = {
-        1: "Aucune action requise, suivi de routine.",
-        2: "A surveiller lors du prochain conseil de classe.",
-        3: "Entretien conseille avec l'eleve dans les prochaines semaines.",
-        4: "Intervention prioritaire, entretien avec l'eleve et sa famille.",
-    }
-    for niveau, libelle in [(1, "Tres faible"), (2, "Faible"), (3, "Modere"), (4, "Severe")]:
-        donnees_legende.append(["", libelle, legende_texte[niveau]])
+    colonnes = [
+        "index_ligne", "codeEleve", "probabilite_decrochage_pct",
+        "prediction_decrochage_libelle", "niveau_risque_libelle", "recommandation"
+    ]
 
-    tableau_legende = Table(donnees_legende, colWidths=[2 * cm, 3 * cm, 11.5 * cm])
-    style_legende = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5490")),
+    apercu = df[colonnes].head(200).copy()
+    donnees = [colonnes] + apercu.astype(str).values.tolist()
+    tableau = Table(donnees, repeatRows=1)
+    style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f4e79")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
-    for i, niveau in enumerate([1, 2, 3, 4], start=1):
-        style_legende.append(("BACKGROUND", (0, i), (0, i), COULEURS_NIVEAU[niveau]))
-    tableau_legende.setStyle(TableStyle(style_legende))
-    elements.append(tableau_legende)
-    elements.append(Spacer(1, 16))
-
-    # --- Tableau principal : ordre d'origine du fichier importe, non trie ---
-    elements.append(Paragraph("Détail par élève (ordre du fichier importé) :", styles["Heading3"]))
-    elements.append(Spacer(1, 6))
-
-    donnees_tableau = [["Code élève", "Niveau de risque", "Probabilité", "Recommandation"]]
-    for _, ligne in df.iterrows():
-        donnees_tableau.append([
-            ligne["codeEleve"],
-            ligne["niveau_risque_libelle"],
-            f"{ligne['probabilite_decrochage_pct']} %",
-            Paragraph(ligne["recommandation"], styles["Normal"]),
-        ])
-
-    tableau = Table(donnees_tableau, colWidths=[3 * cm, 3 * cm, 2.5 * cm, 8 * cm], repeatRows=1)
-
-    style_tableau = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5490")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]
-    for i, (_, ligne) in enumerate(df.iterrows(), start=1):
-        couleur = COULEURS_NIVEAU.get(int(ligne["niveau_risque_predit"]), colors.white)
-        style_tableau.append(("BACKGROUND", (0, i), (-1, i), couleur))
-
-    tableau.setStyle(TableStyle(style_tableau))
+    tableau.setStyle(TableStyle(style))
     elements.append(tableau)
+    if len(df) > 200:
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("Le PDF affiche les 200 premieres lignes. Le CSV contient toutes les lignes.", styles["Normal"]))
 
     doc.build(elements)
     buffer.seek(0)
     return buffer.getvalue()
 
 
-st.title("🎓 DropoutIA — Detection du risque de decrochage")
-st.write(
-    "Importez un fichier Excel contenant les donnees des eleves "
-    "(format Massar) pour obtenir le niveau de risque et la probabilite "
-    "de decrochage de chacun."
-)
+def afficher_colonnes_attendues():
+    st.sidebar.header("Fichier attendu")
+    st.sidebar.write("Le fichier Excel doit contenir au minimum :")
+    for col in COLONNES_MINIMALES:
+        st.sidebar.code(col)
+    st.sidebar.write("Optionnel pour validation :")
+    st.sidebar.code("Resultat")
 
-fichier_uploade = st.file_uploader("Choisissez un fichier Excel (.xlsx)", type=["xlsx"])
+    st.sidebar.header("Lecture des resultats")
+    st.sidebar.write("Probabilite : sortie du modele de decrochage.")
+    st.sidebar.write("Niveau de risque : derive automatiquement de la probabilite (seuils fixes).")
+
+    st.sidebar.header("Cas limite corrige")
+    st.sidebar.write(
+        "Si NbrAbsence est entierement vide, l'application ne plante plus : "
+        "elle remplace techniquement par 0 et conserve NbrAbsence_manquant=1."
+    )
+
+
+afficher_colonnes_attendues()
+
+st.title("DropoutIA - Detection du risque de decrochage")
+st.caption("Analyse automatique d'un fichier Excel Massar avec probabilite, niveau de risque et recommandations.")
+
+fichier_uploade = st.file_uploader("Importer le fichier Excel", type=["xlsx", "xls"])
 
 if fichier_uploade is not None:
     st.success(f"Fichier recu : {fichier_uploade.name}")
 
-    if st.button("Lancer l'analyse"):
+    if st.button("Lancer l'analyse", type="primary"):
         with st.spinner("Analyse en cours..."):
             try:
                 fichiers = {"fichier": (fichier_uploade.name, fichier_uploade.getvalue())}
-                reponse = requests.post(API_URL, files=fichiers, timeout=120)
+                reponse = requests.post(API_URL, files=fichiers, timeout=180)
 
                 if reponse.status_code == 200:
                     donnees = reponse.json()
-                    df_resultats = pd.DataFrame(donnees["resultats"])
-                    st.session_state["df_resultats"] = df_resultats
+                    st.session_state["df_resultats"] = pd.DataFrame(donnees["resultats"])
+                    st.session_state["meta_resultats"] = donnees.get("meta", {})
                 else:
-                    st.error(f"Erreur de l'API ({reponse.status_code}) : {reponse.json().get('detail')}")
+                    detail = reponse.json().get("detail", reponse.text)
+                    st.error(f"Erreur de l'API ({reponse.status_code}) : {detail}")
 
             except requests.exceptions.ConnectionError:
-                st.error(
-                    "Impossible de contacter l'API. Verifiez qu'elle tourne bien "
-                    "sur http://127.0.0.1:8000 (voir le terminal de l'API)."
-                )
+                st.error("API non joignable. Lancez d'abord : uvicorn main:app --reload dans le dossier api.")
+            except Exception as e:
+                st.error(f"Erreur inattendue : {e}")
 
-# On garde les resultats en memoire (session_state) pour qu'ils restent
-# affiches meme apres avoir clique sur un bouton de telechargement
-# (Streamlit reexecute tout le script a chaque clic, sinon on perdrait
-# l'affichage)
 if "df_resultats" in st.session_state:
     df_resultats = st.session_state["df_resultats"]
+    meta = st.session_state.get("meta_resultats", {})
 
-    st.success(f"{len(df_resultats)} eleves analyses avec succes.")
+    st.subheader("Synthese")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Eleves analyses", len(df_resultats))
+    c2.metric("Risque severe", int((df_resultats["niveau_risque_predit"] == 4).sum()))
+    c3.metric("Probabilite moyenne", f"{df_resultats['probabilite_decrochage_pct'].mean():.1f} %")
+    c4.metric("Lignes a verifier", int(meta.get("nb_lignes_a_verifier_si_resultat_present", 0)))
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Nombre d'eleves", len(df_resultats))
-    col2.metric("Eleves en situation severe", int((df_resultats["niveau_risque_predit"] == 4).sum()))
-    col3.metric(
-        "Probabilite moyenne de decrochage",
-        f"{round(df_resultats['probabilite_decrochage_pct'].mean(), 1)} %"
-    )
+    if meta.get("absences_toutes_manquantes"):
+        st.warning(meta.get("message_absences"))
+    else:
+        st.info(meta.get("message_absences", "Traitement normal des donnees."))
 
-    st.subheader("📊 Visualisations")
+    st.subheader("Visualisations")
     col_a, col_b = st.columns(2)
-
     with col_a:
-        st.write("**Répartition des élèves par niveau de risque**")
         repartition = df_resultats["niveau_risque_libelle"].value_counts().reindex(
-            ["Tres faible", "Faible", "Modere", "Severe"]
+            ["Tres faible", "Faible", "Modere", "Severe"], fill_value=0
         )
         st.bar_chart(repartition)
-
     with col_b:
-        st.write("**Distribution de la probabilité de décrochage**")
         tranches = pd.cut(
             df_resultats["probabilite_decrochage_pct"],
             bins=[0, 20, 40, 60, 80, 100],
-            labels=["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"]
+            include_lowest=True,
+            labels=["0-20%", "20-40%", "40-60%", "60-80%", "80-100%"],
         )
         st.bar_chart(tranches.value_counts().sort_index())
 
-    st.subheader("Résultats détaillés")
-    st.dataframe(df_resultats, use_container_width=True)
+    st.subheader("Resultats detailles")
+    colonnes_affichage = [
+        "index_ligne", "codeEleve", "probabilite_decrochage_pct",
+        "prediction_decrochage_libelle", "niveau_risque_libelle", "recommandation"
+    ]
 
+    df_affichage = df_resultats[colonnes_affichage].copy()
+    st.dataframe(
+        df_affichage,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.subheader("Exports")
     col_csv, col_pdf = st.columns(2)
     with col_csv:
-        csv = df_resultats.to_csv(index=False).encode("utf-8")
+        csv = df_resultats.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            label="📄 Telecharger les resultats (CSV)",
+            "Telecharger les resultats CSV",
             data=csv,
-            file_name="resultats_dropoutia.csv",
+            file_name="resultats_dropoutia_corriges.csv",
             mime="text/csv",
         )
     with col_pdf:
-        pdf_bytes = generer_pdf(df_resultats)
+        pdf_bytes = generer_pdf(df_resultats, meta)
         st.download_button(
-            label="🚨 Telecharger le rapport (PDF)",
+            "Telecharger le rapport PDF",
             data=pdf_bytes,
             file_name="rapport_dropoutia.pdf",
             mime="application/pdf",
